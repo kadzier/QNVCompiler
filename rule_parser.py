@@ -225,10 +225,9 @@ def genFowrardingCirc():
 	numRouterCheckBits = numUniquePorts * numRouterBits # num check bits for router ports
 	
 	numHeaderBits = 2 if TOTAL_NUM_HEADERS == 1 else math.floor(math.log(TOTAL_NUM_HEADERS-1, 2)) + 1
+	# numHeaderBits = math.ceil(math.log(TOTAL_NUM_HEADERS, 2)) # num bits to encode header
 	numHeaderCheckBits = TOTAL_NUM_HEADERS * numHeaderBits
 
-	# numHeaderBits = math.ceil(math.log(TOTAL_NUM_HEADERS, 2)) # num bits to encode header
-	# numHeaderCheckBits = TOTAL_NUM_HEADERS * numHeaderBits # num check bits for header ports
 	
 	# ancilla bits
 	numRouterCheckAncillas = numUniquePorts * (math.ceil(math.log(numUniquePorts, 2)) + 1)
