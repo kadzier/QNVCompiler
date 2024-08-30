@@ -170,7 +170,7 @@ def convertIntToBinaryStr(n, length):
 	l = len(returnStr)
 	for i in range(length - l):
 		returnStr = '0' + returnStr
-	print(returnStr)
+	# print(returnStr)
 	return returnStr
 
 # takes two equal-length binary strings, and returns a list
@@ -190,7 +190,7 @@ def computeCXList(inputBinStr, outputBinStr):
 # the qiskit code for the corresponding quantum circuit 
 def genFowrardingCirc():
 	# 
-	path = "./"
+	path = "."
 	# get rules set of unique ports from .tf files in directory  
 	tfFileNames = getTFNameList(path)
 	print(tfFileNames)
@@ -215,30 +215,30 @@ def genFowrardingCirc():
 		l += 1
 	print("port num map: ", portNumMap)
 	# only one rules dict for now (single .tf file) 
-	print("rules dict: ", rulesDicts[0])
-
+	print("set of rules: ", rulesDicts[0])
 	# total number of rules in the .tf file 
-	numRules = len(rulesDicts[0])
+	allRulesArr = rulesDicts[0]
+	numRules = len(allRulesArr)
+	print("total number of rules:", numRules)
 
-	# total number of qubits we'll need for forwarding circuit 
-	numRouterBits = 2 if numUniquePorts == 1 else math.floor(math.log(numUniquePorts-1, 2)) + 1 # num bits to encode router port num 
-	numRouterCheckBits = numUniquePorts * numRouterBits # num check bits for router ports
-	
-	numHeaderBits = 2 if TOTAL_NUM_HEADERS == 1 else math.floor(math.log(TOTAL_NUM_HEADERS-1, 2)) + 1
-	# numHeaderBits = math.ceil(math.log(TOTAL_NUM_HEADERS, 2)) # num bits to encode header
-	numHeaderCheckBits = TOTAL_NUM_HEADERS * numHeaderBits
+	# total number of qubits we'll need for circuit:
+	# qubits for router match circuits  
+	numRouterBits = math.floor(math.log(numUniquePorts-1, 2)) + 1 # num bits to encode router port num 
+	numRouterCheckBits = 2
+	numRouterCheckAncillas = numRules * (numRouterBits + 1)
 
-	
-	# ancilla bits
-	numRouterCheckAncillas = numUniquePorts * (math.ceil(math.log(numUniquePorts, 2)) + 1)
-	numHeaderCheckAncillas = TOTAL_NUM_HEADERS * (math.ceil(math.log(TOTAL_NUM_HEADERS, 2))+1)
+	# qubits for header match circuits	
+	numHeaderBits = math.floor(math.log(TOTAL_NUM_HEADERS-1, 2)) + 1
+	numHeaderCheckBits = 2
+	numHeaderCheckAncillas = numRules * (numHeaderBits + 1)
 
-	# forwarding rule ancilla bits
-	numFwdAncillas = numRules
+	# qubits for routing logic
+	numRoutingLogicAncillas = numRules
 
-	print(numRules, numRouterBits, numRouterCheckBits, numHeaderBits, numHeaderCheckBits, numRouterCheckAncillas, numHeaderCheckAncillas)
 
-	print("writing output to file")
+	print(numRules, numRouterBits, numRouterCheckBits, numRouterCheckAncillas, numHeaderBits, numHeaderCheckAncillas, numRoutingLogicAncillas)
+
+	print("writing output to file...")
 
 	# start writing to output file
 	outfileStr = "prog.txt"
@@ -246,12 +246,150 @@ def genFowrardingCirc():
 	f.write("# ***Defining Quantum registers***\n\n")	
 	f.write("router = QuantumRegister(%d, 'r')\n"%numRouterBits)
 	f.write("router_check = QuantumRegister(%d, 'rc')\n"%numRouterCheckBits)
+	f.write("rc_ancillas = QuantumRegister(%d, 'rca')\n"%numRouterCheckAncillas)
 	f.write("header = QuantumRegister(%d, 'h')\n"%numHeaderBits)
 	f.write("header_check = QuantumRegister(%d, 'hc')\n"%numHeaderCheckBits)
-	f.write("rc_ancillas = QuantumRegister(%d, 'rca')\n"%numRouterCheckAncillas)
 	f.write("hc_ancillas = QuantumRegister(%d, 'hca')\n"%numHeaderCheckAncillas)
-	f.write("fwd_ancillas = QuantumRegister(%d, 'fwd')\n"%numFwdAncillas)
-	f.write("qc = QuantumCircuit(router, router_check, header, header_check, rc_ancillas, hc_ancillas, fwd_ancillas)\n")
+	f.write("routing_logic = QuantumRegister(%d, 'fwd')\n"%numRoutingLogicAncillas)
+	f.write("qc = QuantumCircuit(router, router_check, rc_ancillas, header, header_check, hc_ancillas, routing_logic)\n")
+
+	# X gate for "0" check bits on header and router 
+	routerCheckXIndex = numRouterBits + 1
+	headerCheckXIndex = numRouterBits + numRouterCheckBits + numRouterCheckAncillas + numHeaderBits + 1
+	
+	f.write("qc.x(%d)\n"%routerCheckXIndex)
+	f.write("qc.x(%d)\n"%headerCheckXIndex)
+
+	# arrays to save logical outputs for header/router match circuits 
+	routerOutIndices = []
+	headerOutIndices = []
+
+	# router match circuit
+	routerBitStartIndex = 0
+	routerCheckBitStartIndex = routerBitStartIndex + numRouterBits
+	routerAncillaIndexStart = routerCheckBitStartIndex + numRouterCheckBits
+
+	# one AND gate per match 
+	for i in range(numRules):
+
+		# AND circuit start index for this rule 
+		routerAncillaIndexShift = i*(numRouterBits + 1)
+		topANDIndex = routerAncillaIndexStart + routerAncillaIndexShift
+		routerOutIndices.append(topANDIndex + numRouterBits)
+
+		# convert rule input port to binary string
+		rule = allRulesArr[i]
+		print("scanning rule",rule['id'])
+		inputPortStr = int(rule["inputPort"][0]) # get input port as string
+		# convert input port through mapping
+		inputPortInt = portNumMap[inputPortStr]
+		print("input port int:",inputPortInt)
+		inputBinStr = convertIntToBinaryStr(inputPortInt, numRouterBits)
+		print("input port in binary:",inputBinStr)
+
+		# CNOT gates for router and check bits
+		for j in range(numRouterBits):
+			f.write("qc.cx(%d,%d)\n"%(routerBitStartIndex + j, topANDIndex + j))
+			checkBit = int(inputBinStr[j]) # 0 or 1
+			if checkBit == 0:
+				f.write("qc.cx(%d,%d)\n"%(routerCheckBitStartIndex + 1, topANDIndex + j))
+			else:
+				f.write("qc.cx(%d,%d)\n"%(routerCheckBitStartIndex, topANDIndex + j))
+
+		
+		
+		# AND gate for router match 
+		andStr = "["
+		for j in range(numRouterBits):
+			if j == numRouterBits - 1:
+				andStr += "1]"
+			else:
+				andStr += "1,"
+		f.write("A = AND(%d,%s)\n"%(numRouterBits,andStr))
+		# place AND gate
+		andAppendStr = "[" + str(topANDIndex) + ","
+		for k in range(numRouterBits):
+			if k == numRouterBits - 1:
+				andAppendStr += str(topANDIndex + k + 1) + "]"
+			else:
+				andAppendStr += str(topANDIndex + k + 1) + ","
+		f.write("qc.append(A,%s)\n"%andAppendStr)
+
+	# header match circuit 
+	headerBitStartIndex = numRouterBits + numRouterCheckBits + numRouterCheckAncillas
+	headerCheckBitStartIndex = headerBitStartIndex + numHeaderBits
+	headerAncillaStartIndex = headerCheckBitStartIndex + numHeaderCheckBits
+
+	# one AND gate per match
+	for i in range(numRules):
+		# AND circuit start index for this rule 
+		headerAncillaIndexShift = i*(numHeaderBits + 1)
+		topANDIndex = headerAncillaStartIndex + headerAncillaIndexShift
+		headerOutIndices.append(topANDIndex + numHeaderBits)
+
+		# CNOT gates for headers with wildcards
+		rule = allRulesArr[i]
+		headerStr = rule["headerMatch"]
+		for j in range(len(headerStr)):
+			h = headerStr[j]
+			if h == "x":
+				f.write("qc.x(%d)\n"%(topANDIndex + j))
+			else:
+				f.write("qc.cx(%d,%d)\n"%(headerBitStartIndex + j, topANDIndex + j))
+
+		# AND gate for header match 
+		andStr = "["
+		for j in range(numHeaderBits):
+			if j == numHeaderBits - 1:
+				andStr += "1]"
+			else:
+				andStr += "1,"
+		f.write("A = AND(%d,%s)\n"%(numHeaderBits,andStr))
+		# place AND gate
+		andAppendStr = "[" + str(topANDIndex) + ","
+		for k in range(numHeaderBits):
+			if k == numHeaderBits - 1:
+				andAppendStr += str(topANDIndex + k + 1) + "]"
+			else:
+				andAppendStr += str(topANDIndex + k + 1) + ","
+		f.write("qc.append(A,%s)\n"%andAppendStr)
+
+	# Implement match/action forwarding logic 
+	fwdStartIndex = headerAncillaStartIndex + numHeaderCheckAncillas
+	for i in range(numRules):
+		# AND of header and router match 
+		f.write("A = AND(2,[1,1])\n")
+		# place AND gate
+		andAppendStr = "[%d,%d,%d]"%(routerOutIndices[i],headerOutIndices[i],fwdStartIndex + i)
+		f.write("qc.append(A,%s)\n"%andAppendStr)
+
+		# CNOTs to implement forwarding logic 
+
+		rule = allRulesArr[i]
+
+		inputPortRaw = int(rule["inputPort"][0])
+		inputPortInt = portNumMap[inputPortRaw]
+		outputPortRaw = int(rule["outputPort"][0])
+		outputPortInt = portNumMap[outputPortRaw]
+
+		inputBinStr = convertIntToBinaryStr(inputPortInt, numRouterBits)
+		outputBinStr = convertIntToBinaryStr(outputPortInt, numRouterBits)
+		cxList = computeCXList(inputBinStr, outputBinStr)
+		print("input/output str:",inputBinStr,outputBinStr)
+		print("router cx gates list:", cxList)
+
+		for k in range(len(cxList)):
+			if cxList[k] == 'O':
+				continue
+			else:
+				f.write("qc.cx(%d,%d)\n"%(fwdStartIndex + i,routerBitStartIndex + k))
+	f.write("\n")
+	f.write("qc.draw(output='mpl')\n")
+	f.close()
+
+
+
+	exit()
 
 	# cnot gates from router bits and router check bits to the check ancillas
 	f.write("# ***Router bit-checker circuit***\n\n")
@@ -433,6 +571,11 @@ def genFowrardingCirc():
 
 if __name__ == "__main__":
 
+	print()
+	print("*************************************")
+	print("********COMPILING CIRCUIT************")
+	print("*************************************")
+	print()
 
 	# generate the code for a .tf file that just contains header match/forwarding ops 
 	genFowrardingCirc()
